@@ -6,15 +6,17 @@ import time
 from collections import defaultdict
 from imdb import Cinemagoer
 import tmdbsimple as tmdb
+from dotenv import load_dotenv
+import os
 
+load_dotenv()
 
-API_KEY = "6a4e130a0bdbca44d8d0cf7c60032892"
+API_KEY = os.getenv("TMDB_API_KEY") #API KEY STORED IN .env
 
-tmdb.API_KEY = '6a4e130a0bdbca44d8d0cf7c60032892'
 
 BASE_URL = "https://wikidobragens.fandom.com"
 
-TEST_MODE = True  # ⬅️ Set to False to run on full data
+TEST_MODE = False  # ⬅️ Set to False to run on full data
 
 #Initialize a list to hold error messages for each row
 error_logs = []
