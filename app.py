@@ -9,6 +9,15 @@ st.title("Extrator de Séries")
 
 wiki_link = st.text_input("Informe o link da Fandom:")
 
+#Option to limit how many shows to process
+st.markdown("### Opções de processamento")
+parse_all = st.checkbox("Processar lista completa", value=False)
+
+if not parse_all:
+    max_items = st.number_input("Número de itens a processar:", min_value=1, step=1, value=5)
+else:
+    max_items = None
+
 status = st.empty()
 
 if st.button("Processar"):
@@ -16,10 +25,8 @@ if st.button("Processar"):
         st.error("Informe um link válido.")
     else:
         with st.spinner("Processando..."):
-            df = main.run_scraper(wiki_link, status)
-        st.success("Dados processados com sucesso.")
-        st.write("Resultado:")
-        st.dataframe(df)
+            df = main.run_scraper(wiki_link, status=status, max_items=max_items)
+        status.success("Dados processados com sucesso.")
 
         col1, col2= st.columns(2)
         with col1:
@@ -46,4 +53,5 @@ if st.button("Processar"):
                 file_name='series_temporadas_expandido.xlsx',
                 mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
             )
-        st.success("Dados exportados para resultado.csv")
+        st.write("Resultado:")
+        st.dataframe(df)

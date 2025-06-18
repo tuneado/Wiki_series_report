@@ -8,10 +8,20 @@ from imdb import Cinemagoer
 import tmdbsimple as tmdb
 from dotenv import load_dotenv
 import os
+import streamlit as st
 
 load_dotenv()
 
 API_KEY = os.getenv("TMDB_API_KEY") #API KEY STORED IN .env
+
+# Fallback to Streamlit secrets if not found
+if not API_KEY:
+    if "TMDB_API_KEY" in st.secrets:
+        API_KEY = st.secrets["TMDB_API_KEY"]
+    else:
+        st.error("❌ No TMDB API KEY defined in .env or Streamlit secrets.")
+        st.stop()
+
 
 
 BASE_URL = "https://wikidobragens.fandom.com"
@@ -39,6 +49,7 @@ def extract_labels_from_page(url, labels):
                 if label_text in labels:
                     result[label_text] = value_text
         return result
+
     except Exception as e:
         print(f"❌ Error accessing {url}: {e}")
         return {label: None for label in labels}
@@ -46,14 +57,13 @@ def extract_labels_from_page(url, labels):
 
 def get_seasons_as_rows(show_title, base_row , status=None):
     fandom_url = base_row['URL']
-
     if fandom_url:
         print((msg := f"🔍 Extraindo info da Fandom para: {show_title}")); status.write(msg)
         extra_data = extract_labels_from_page(fandom_url , ["Direção de Atores"])
 
         direction = extra_data.get("Direção de Atores") or ""
 
-        base_row = base_row.copy()
+        base_row = base_row.to_dict()
         base_row["Direção de Atores"] = direction
     # Initialize IMDbPY
     ia = Cinemagoer()
@@ -102,9 +112,8 @@ def get_seasons_as_rows(show_title, base_row , status=None):
         episode_count = season.get("episode_count", 0)
         release_year = air_date[:4] if air_date else "N/A"
 
-        new_row = base_row.copy()
+        new_row = dict(base_row)
         new_row["Nome Original"] = original_show_name
-        new_row["Total Temporadas"] = show_resp.get("number_of_seasons")
         new_row["Temporada"] = "Especiais" if season_number == 0 else season_number
         new_row["Ano Lançamento"] = release_year
         new_row["Episódios"] = episode_count
@@ -114,7 +123,7 @@ def get_seasons_as_rows(show_title, base_row , status=None):
 
 
 
-def run_scraper(wiki_link , status=None):
+def run_scraper(wiki_link , status=None , max_items=None):
     # --- Step 1: Fetch the main page and find the table ---
     #main_url = f"{BASE_URL}/pt/wiki/André_Raimundo"
     response = requests.get(wiki_link)
@@ -149,7 +158,11 @@ def run_scraper(wiki_link , status=None):
         current_name = None
         current_link = None
 
-        for row in rows[1:16 if TEST_MODE else None]:
+        for i, row in enumerate(rows[1:]):
+            if TEST_MODE and i >= 16:
+                break
+            if max_items and len(data) >= max_items:
+                break
             cols = row.find_all("td")
             if not cols:
                 continue
