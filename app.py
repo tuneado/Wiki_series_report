@@ -5,12 +5,12 @@ import main  # importa suas funções do main.py
 import pandas as pd
 from io import BytesIO
 
-st.title("Extrator de Séries")
+st.title("Wikidobragens Info de Séries")
 
-wiki_link = st.text_input("Informe o link da Fandom:")
+wiki_link = st.text_input("O seu link da Wiki:")
 
 #Option to limit how many shows to process
-st.markdown("### Opções de processamento")
+st.markdown("### Opções")
 parse_all = st.checkbox("Processar lista completa", value=False)
 
 if not parse_all:
@@ -22,7 +22,7 @@ status = st.empty()
 
 if st.button("Processar"):
     if not wiki_link:
-        st.error("Informe um link válido.")
+        st.error("Insira um link válido.")
     else:
         with st.spinner("Processando..."):
             df = main.run_scraper(wiki_link, status=status, max_items=max_items)

@@ -3,3 +3,4 @@ vars.env
 venv/
 __pycache__/
 start.sh
+.streamlit/
