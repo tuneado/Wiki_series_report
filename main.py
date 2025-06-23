@@ -1,37 +1,27 @@
 # -*- coding: utf-8 -*-
-import requests
-from bs4 import BeautifulSoup
-import pandas as pd
+import os
 import time
+import requests
+import pandas as pd
+from bs4 import BeautifulSoup
 from collections import defaultdict
 from imdb import Cinemagoer
-import tmdbsimple as tmdb
-from dotenv import load_dotenv
-import os
 import streamlit as st
+from dotenv import load_dotenv
 
+# --- Setup ---
 load_dotenv()
-
-API_KEY = os.getenv("TMDB_API_KEY") #API KEY STORED IN .env
-
-# Fallback to Streamlit secrets if not found
+API_KEY = os.getenv("TMDB_API_KEY")
 if not API_KEY:
-    if "TMDB_API_KEY" in st.secrets:
-        API_KEY = st.secrets["TMDB_API_KEY"]
-    else:
+    API_KEY = st.secrets.get("TMDB_API_KEY")
+    if not API_KEY:
         st.error("❌ No TMDB API KEY defined in .env or Streamlit secrets.")
         st.stop()
 
-
-
 BASE_URL = "https://wikidobragens.fandom.com"
+TEST_MODE = False
+error_logs = {}  # Maps show title to error messages
 
-TEST_MODE = False  # ⬅️ Set to False to run on full data
-
-#Initialize a list to hold error messages for each row
-error_logs = []
-
-# --- Utility Function: Extract Info by Label from a Detail Page ---
 def extract_labels_from_page(url, labels):
     try:
         response = requests.get(url)
@@ -39,239 +29,167 @@ def extract_labels_from_page(url, labels):
         soup = BeautifulSoup(response.content, "html.parser")
         data_blocks = soup.find_all("div", class_="pi-data")
 
-        result = {}
+        result = {label: None for label in labels}  # Default None for all
+
         for block in data_blocks:
             label_tag = block.find("h3", class_="pi-data-label")
             value_tag = block.find("div", class_="pi-data-value")
-            if label_tag and value_tag:
-                label_text = label_tag.get_text(strip=True)
-                value_text = value_tag.get_text(strip=True)
-                if label_text in labels:
-                    result[label_text] = value_text
+
+            if not label_tag or not value_tag:
+                continue
+
+            label_text = label_tag.get_text(strip=True)
+            if label_text in labels:
+                result[label_text] = value_tag.get_text(" ", strip=True)  # Join inner text if nested
+
         return result
 
     except Exception as e:
         print(f"❌ Error accessing {url}: {e}")
         return {label: None for label in labels}
 
-
-def get_seasons_as_rows(show_title, base_row , status=None):
+# --- Expand Seasons using IMDb and TMDb ---
+def get_seasons_as_rows(title, base_row, status=None):
     fandom_url = base_row['URL']
     if fandom_url:
-        print((msg := f"🔍 Extraindo info da Fandom para: {show_title}")); status.write(msg)
-        extra_data = extract_labels_from_page(fandom_url , ["Direção de Atores"])
-
-        direction = extra_data.get("Direção de Atores") or ""
-
+        msg = f"🔍 Extraindo info da Fandom para: {title}"
+        print(msg); status.write(msg)
+        extra = extract_labels_from_page(fandom_url, ["Direção de Atores","Direção Técnica"])
         base_row = base_row.to_dict()
-        base_row["Direção de Atores"] = direction
-    # Initialize IMDbPY
-    ia = Cinemagoer()
-    print((msg := f"🔍 Searching IMDb for: {show_title}")); status.write(msg);
-    # Search for the show on IMDb
-    results = ia.search_movie(show_title)
+        base_row["Direção de Atores"] = extra.get("Direção de Atores", "")
+        base_row["Direção Técnica"] = extra.get("Direção Técnica", "")
 
+    ia = Cinemagoer()
+    msg = f"🔍 Searching IMDb for: {title}"
+    print(msg); status.write(msg)
+    results = ia.search_movie(title)
     if not results:
-        print("  ❌ No results found on IMDb.")
-        error_logs.append(" ❌ No results found on IMDb.")
+        msg = "❌ No results found on IMDb."
+        print(msg); status.error(msg)
+        error_logs[title] = msg
         return []
-    # Iterate through results to find the first TV series
+
     for result in results:
         ia.update(result)
         if result.get('kind') == 'tv series':
             show = result
-
-
             break
     else:
-        print("  ❌ No TV series found in the results.")
+        msg = "❌ No TV series found in the results."
+        print(msg); status.error(msg)
+        error_logs[title] = msg
         return []
 
-    ia.update(show)  # Update the show info with IMDbPY
-    original_show_name = show.get('title')
-    print((msg := f"  🎬 Found: {original_show_name} ({show.movieID}) — Type: {show.get('kind')}")); status.write(msg);
-    # Step 1: Search TMDb for show
-    search_url = "https://api.themoviedb.org/3/search/tv"
-    search_resp = requests.get(search_url, params={"api_key": API_KEY, "query": original_show_name}).json()
-    results = search_resp.get("results", [])
+    ia.update(show)
+    original_title = show.get('title')
+    msg = f"🎬 Found: {original_title} ({show.movieID}) — Type: {show.get('kind')}"
+    print(msg); status.write(msg)
 
-    if not results:
-        print(f"❌ Show not found: {show_title}")
+    try:
+        tmdb_url = "https://api.themoviedb.org/3/search/tv"
+        tmdb_resp = requests.get(tmdb_url, params={"api_key": API_KEY, "query": original_title}).json()
+        show_id = tmdb_resp.get("results", [{}])[0].get("id")
+        if not show_id:
+            raise ValueError("TMDb show not found")
+
+        tmdb_show = requests.get(f"https://api.themoviedb.org/3/tv/{show_id}", params={"api_key": API_KEY}).json()
+    except Exception as e:
+        msg = f"❌ TMDb error: {e}"
+        print(msg); status.error(msg)
+        error_logs[title] = msg
         return []
-
-    show_id = results[0]["id"]
-
-    # Step 2: Get full show info
-    show_url = f"https://api.themoviedb.org/3/tv/{show_id}"
-    show_resp = requests.get(show_url, params={"api_key": API_KEY}).json()
 
     rows = []
-    for season in show_resp.get("seasons", []):
+    for season in tmdb_show.get("seasons", []):
         season_number = season.get("season_number")
         air_date = season.get("air_date")
-        episode_count = season.get("episode_count", 0)
-        release_year = air_date[:4] if air_date else "N/A"
+        year = air_date[:4] if air_date else "N/A"
 
-        new_row = dict(base_row)
-        new_row["Nome Original"] = original_show_name
-        new_row["Temporada"] = "Especiais" if season_number == 0 else season_number
-        new_row["Ano Lançamento"] = release_year
-        new_row["Episódios"] = episode_count
-        rows.append(new_row)
-
+        row = dict(base_row)
+        row.update({
+            "Nome Original": original_title,
+            "Temporada": "Especiais" if season_number == 0 else season_number,
+            "Ano Lançamento": year,
+            "Episódios": season.get("episode_count", 0),
+        })
+        rows.append(row)
     return rows
 
+# --- Main Scraper ---
+def run_scraper(wiki_link, status=None, max_items=None):
+    soup = BeautifulSoup(requests.get(wiki_link).content, "html.parser")
+    status.write("🔍 A procurar tabela na Fandom...")
 
-
-def run_scraper(wiki_link , status=None , max_items=None):
-    # --- Step 1: Fetch the main page and find the table ---
-    #main_url = f"{BASE_URL}/pt/wiki/André_Raimundo"
-    response = requests.get(wiki_link)
-    soup = BeautifulSoup(response.content, "html.parser")
-
-    print((msg := "A procurar tabela na Fandom...")); status.write(msg)
-
-    # Find section <span class="mw-headline">Séries</span>
-    target_section = soup.find("span", class_="mw-headline", string="Séries")
+    section = soup.find("span", class_="mw-headline", string="Séries")
     table = None
-    if target_section:
-        current = target_section.parent
+    if section:
+        current = section.parent
         while current:
             current = current.find_next_sibling()
             if current and current.name == "table" and "article-table" in current.get("class", []):
                 table = current
                 break
 
-    # --- Step 2: Extract table data and links ---
-    data = []
-    char_map = defaultdict(set)
-    links = []
-
+    data, links, char_map = [], [], defaultdict(set)
     if table:
         rows = table.find_all("tr")
         headers = [th.get_text(strip=True) for th in rows[0].find_all(["th", "td"])]
+        name_idx = headers.index("Nome")
+        char_idx = headers.index("Personagem")
 
-        name_col_index = headers.index("Nome")
-        personagem_col_index = headers.index("Personagem")
-        estudio_col_index = headers.index("Estúdio")
-
-        current_name = None
-        current_link = None
-
+        current_name = current_link = None
         for i, row in enumerate(rows[1:]):
-            if TEST_MODE and i >= 16:
-                break
-            if max_items and len(data) >= max_items:
-                break
-            cols = row.find_all("td")
-            if not cols:
-                continue
+            if TEST_MODE and i >= 16: break
+            if max_items and len(data) >= max_items: break
 
-            row_values = [col.get_text(strip=True) for col in cols]
-            first_cell = cols[name_col_index]
-            link_tag = first_cell.find("a", href=True)
-            cell_text = first_cell.get_text(strip=True)
+            cols = row.find_all("td")
+            if not cols: continue
+            values = [col.get_text(strip=True) for col in cols]
+            link_tag = cols[name_idx].find("a", href=True)
+            cell_text = cols[name_idx].get_text(strip=True)
 
             if link_tag:
-                # This row starts a new show:
                 current_name = cell_text
                 current_link = BASE_URL + link_tag["href"]
-                # Also collect персонаgm from the designated column, if any
-                personagem_text = (
-                    row_values[personagem_col_index]
-                    if personagem_col_index < len(row_values) else ""
-                )
-                if personagem_text:
-                    char_map[current_name].add(personagem_text)
-
+                char = values[char_idx] if char_idx < len(values) else ""
+                if char: char_map[current_name].add(char)
             else:
-                # No link in first cell → likely a character‐only row
-                # If the “Personagem” column has something, take that first:
-                personagem_text = (
-                    row_values[personagem_col_index]
-                    if personagem_col_index < len(row_values) else ""
-                )
+                char = values[char_idx] if char_idx < len(values) else ""
+                if char or cell_text:
+                    char_map[current_name].add(char or cell_text)
 
-                if personagem_text:
-                    char_map[current_name].add(personagem_text)
-                elif cell_text:
-                    # If “Personagem” is empty but first cell has text,
-                    # treat that text as a character name:
-                    char_map[current_name].add(cell_text)
-                # else: truly a blank row with no character
-
-            # Decide whether to keep this row in the DataFrame
-            is_character_row = bool(personagem_text or (cell_text and not link_tag))
-
-            if link_tag or is_character_row:
-                data.append(row_values)
+            if link_tag or char:
+                data.append(values)
                 links.append(current_link if link_tag else None)
-            # else: skip ghost rows like "Will Benjamin" without link or character
 
-
-
-        # Now build df
         df = pd.DataFrame(data, columns=headers)
         df["Nome"] = df["Nome"].replace("", pd.NA).ffill()
         df["URL"] = links
-        df["Personagens (Todos)"] = df["Nome"].map(lambda nm: sorted(char_map.get(nm, []))).apply(lambda x: ", ".join(map(str, x)))
-        #df["Personagens (Todos)"] = df["Personagens (Todos)"].apply(lambda x: ", ".join(map(str, x)))
-
+        df["Personagens (Todos)"] = df["Nome"].map(lambda nm: ", ".join(sorted(char_map[nm])))
     else:
-        df = pd.DataFrame()
-        print((msg := "❌ Table not found in 'Séries' section.")); status.error(msg); error_logs.append(msg)
+        status.error("❌ Tabela não encontrada.")
+        return pd.DataFrame()
 
-    # Remove rows that are likely junk: no link, no personagem, and name isn't a known show
-    df = df[~(
-        df["URL"].isna() &
-        df["Personagem"].isna() &
-        ~df["Nome"].isin(char_map.keys())
-    )]
+    df = df[~(df["URL"].isna() & df["Personagem"].isna() & ~df["Nome"].isin(char_map))]
     df = df.drop("Personagem", axis=1)
+    df["Estúdio"] = df["Estúdio"].replace("", pd.NA).ffill()
+    df["Error Log"] = df["Nome"].map(error_logs).fillna("")
 
-
-    # --- Apply to DataFrame ---
-    for title in df['Nome']:
-        print((msg := f"🔎 Searching IMDb for: {title}")); status.write(msg); 
-        #n_seasons , seasons_date , tmdb_link , original_title = get_tmdb_season_info(title)
-        #print(f"📺 {title}: {n_seasons} season(s)")
-        #season_counts.append(n_seasons)
-        #show_nome_original.append(original_title)
-        #time.sleep(1)  # Be nice to IMDb's servers
-
-    cols_to_fill = ["Estúdio"]
-    df[cols_to_fill] = df[cols_to_fill].replace("", pd.NA).ffill()
-
-    expanded_rows = []
-
+    expanded = []
     for _, row in df.iterrows():
         title = row["Nome"]
-        print((msg := f"📺 Expanding: {title}")); status.write(msg);
-        season_rows = get_seasons_as_rows(title, row , status)
+        msg = f"📺 Expanding: {title}"
+        print(msg); status.write(msg)
+        season_rows = get_seasons_as_rows(title, row, status)
+        err = error_logs.get(title, "")
 
         if season_rows:
-            expanded_rows.extend(season_rows)
+            for s in season_rows:
+                s["Error Log"] = err
+                expanded.append(s)
         else:
-            fallback_row = row.copy()
-            fallback_row["Temporada"] = None
-            fallback_row["Ano Lançamento"] = None
-            fallback_row["Episódios"] = None
-            expanded_rows.append(fallback_row)
+            fallback = row.copy()
+            fallback.update({"Temporada": None, "Ano Lançamento": None, "Episódios": None, "Error Log": err})
+            expanded.append(fallback)
 
-    if error_logs:
-      df["Error Log"] = error_logs
-    df_expanded = pd.DataFrame(expanded_rows)
-
-
-    return df_expanded
-
-    """
-
-    # --- Step 4: Export ---
-    df.to_excel("tabela_series_com_info.xlsx", index=False)
-    print("✅ Excel file saved as 'tabela_series_com_info.xlsx'")
-
-    df_expanded.to_excel("series_temporadas_expandido.xlsx", index=False)
-    print("✅ Saved as 'series_temporadas_expandido.xlsx'")
-
-    """
+    return pd.DataFrame(expanded)

@@ -4,6 +4,7 @@ import streamlit as st
 import main  # importa suas funções do main.py
 import pandas as pd
 from io import BytesIO
+import requests
 
 st.title("Wikidobragens Info de Séries")
 
