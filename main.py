@@ -19,7 +19,7 @@ if not API_KEY:
         st.stop()
 
 BASE_URL = "https://wikidobragens.fandom.com"
-TEST_MODE = True
+TEST_MODE = False
 error_logs = {}  # Maps show title to error messages
 
 def extract_labels_from_page(url, labels):
@@ -148,7 +148,7 @@ def run_scraper(wiki_link, status=None, max_items=None):
         char_idx = headers.index("Personagem")
 
         current_name = current_link = None
-        for i, row in enumerate(rows[200:]):
+        for i, row in enumerate(rows[1:]):
             if TEST_MODE and i >= 16: break
             if max_items and len(data) >= max_items: break
 
