@@ -51,23 +51,18 @@ def extract_labels_from_page(url, labels):
 # --- Expand Seasons using IMDb and TMDb ---
 def get_seasons_as_rows(title, base_row, status=None):
     fandom_url = base_row['URL']
-    titulo_original = None
-    if fandom_url:
-        msg = f"🔍 Extraindo info da Fandom para: {title}"
-        print(msg); status.write(msg)
-        extra = extract_labels_from_page(fandom_url, ["Direção de Atores", "Direção Técnica", "Título Original"])
-        titulo_original = extra.get("Título Original")
-        if not titulo_original:
-            titulo_original = title
+    extra = extract_labels_from_page(fandom_url, ["Direção de Atores", "Direção Técnica", "Título Original"])
+    titulo_original = extra.get("Título Original") or title  # fallback
 
-        base_row = base_row.to_dict()
-        base_row.update({
-            "Direção de Atores": extra.get("Direção de Atores", ""),
-            "Direção Técnica": extra.get("Direção Técnica", ""),
-            "Título Original": titulo_original
-        })
-        search_title = titulo_original
-        print(f"Título Original extracted: {extra.get('Título Original')}")
+    # Always inject into base_row now
+    base_row = base_row.to_dict()
+    base_row.update({
+        "Direção de Atores": extra.get("Direção de Atores", ""),
+        "Direção Técnica": extra.get("Direção Técnica", ""),
+        "Título Original": titulo_original
+    })
+    search_title = titulo_original
+    print(f"Título Original extracted: {extra.get('Título Original')}")
 
     ia = Cinemagoer()
     msg = f"🔍 Searching IMDb for: {search_title}"
