@@ -19,7 +19,7 @@ if not API_KEY:
         st.stop()
 
 BASE_URL = "https://wikidobragens.fandom.com"
-TEST_MODE = False
+TEST_MODE = True
 error_logs = {}  # Maps show title to error messages
 
 def extract_labels_from_page(url, labels):
@@ -51,18 +51,28 @@ def extract_labels_from_page(url, labels):
 # --- Expand Seasons using IMDb and TMDb ---
 def get_seasons_as_rows(title, base_row, status=None):
     fandom_url = base_row['URL']
+    titulo_original = None
     if fandom_url:
         msg = f"🔍 Extraindo info da Fandom para: {title}"
         print(msg); status.write(msg)
-        extra = extract_labels_from_page(fandom_url, ["Direção de Atores","Direção Técnica"])
+        extra = extract_labels_from_page(fandom_url, ["Direção de Atores", "Direção Técnica", "Título Original"])
+        titulo_original = extra.get("Título Original")
+        if not titulo_original:
+            titulo_original = title
+
         base_row = base_row.to_dict()
-        base_row["Direção de Atores"] = extra.get("Direção de Atores", "")
-        base_row["Direção Técnica"] = extra.get("Direção Técnica", "")
+        base_row.update({
+            "Direção de Atores": extra.get("Direção de Atores", ""),
+            "Direção Técnica": extra.get("Direção Técnica", ""),
+            "Título Original": titulo_original
+        })
+        search_title = titulo_original
+        print(f"Título Original extracted: {extra.get('Título Original')}")
 
     ia = Cinemagoer()
-    msg = f"🔍 Searching IMDb for: {title}"
+    msg = f"🔍 Searching IMDb for: {search_title}"
     print(msg); status.write(msg)
-    results = ia.search_movie(title)
+    results = ia.search_movie(search_title)
     if not results:
         msg = "❌ No results found on IMDb."
         print(msg); status.error(msg)
@@ -81,7 +91,7 @@ def get_seasons_as_rows(title, base_row, status=None):
         return []
 
     ia.update(show)
-    original_title = show.get('title')
+    original_title = show.get('title') or titulo_original
     msg = f"🎬 Found: {original_title} ({show.movieID}) — Type: {show.get('kind')}"
     print(msg); status.write(msg)
 
@@ -107,7 +117,7 @@ def get_seasons_as_rows(title, base_row, status=None):
 
         row = dict(base_row)
         row.update({
-            "Nome Original": original_title,
+            "Título Original": search_title,
             "Temporada": "Especiais" if season_number == 0 else season_number,
             "Ano Lançamento": year,
             "Episódios": season.get("episode_count", 0),
@@ -138,7 +148,7 @@ def run_scraper(wiki_link, status=None, max_items=None):
         char_idx = headers.index("Personagem")
 
         current_name = current_link = None
-        for i, row in enumerate(rows[1:]):
+        for i, row in enumerate(rows[200:]):
             if TEST_MODE and i >= 16: break
             if max_items and len(data) >= max_items: break
 
@@ -180,16 +190,37 @@ def run_scraper(wiki_link, status=None, max_items=None):
         title = row["Nome"]
         msg = f"📺 Expanding: {title}"
         print(msg); status.write(msg)
+        
         season_rows = get_seasons_as_rows(title, row, status)
         err = error_logs.get(title, "")
-
+        
+        # Get or fallback the original title from the current row or title
+        titulo_original = row.get("Título Original", title)
+        
         if season_rows:
             for s in season_rows:
                 s["Error Log"] = err
+                # Ensure "Título Original" is set properly
+                if not s.get("Título Original"):
+                    s["Título Original"] = titulo_original
+                # Sanitize values
+                for k, v in s.items():
+                    if isinstance(v, (dict, list)):
+                        s[k] = str(v)
                 expanded.append(s)
         else:
-            fallback = row.copy()
-            fallback.update({"Temporada": None, "Ano Lançamento": None, "Episódios": None, "Error Log": err})
+            fallback = row.to_dict()
+            fallback.update({
+                "Título Original": titulo_original,
+                "Temporada": None,
+                "Ano Lançamento": None,
+                "Episódios": None,
+                "Error Log": err
+            })
+            # Sanitize values
+            for k, v in fallback.items():
+                if isinstance(v, (dict, list)):
+                    fallback[k] = str(v)
             expanded.append(fallback)
 
     return pd.DataFrame(expanded)
