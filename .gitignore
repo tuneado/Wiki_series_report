@@ -1,6 +1,9 @@
 # .gitignore
 vars.env
+.env
 venv/
 __pycache__/
-start.sh
 .streamlit/
+*.pyc
+.DS_Store
+wiki_cache.sqlite
