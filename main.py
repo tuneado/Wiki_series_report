@@ -9,6 +9,7 @@ enriches with season/year data from IMDb (Cinemagoer) and TMDb (tmdbsimple).
 import os
 import re
 import time
+import requests
 import pandas as pd
 import requests_cache
 from bs4 import BeautifulSoup
@@ -63,11 +64,13 @@ _browser_instance: Optional[Browser] = None
 _browser_context: Optional[BrowserContext] = None
 
 
-def _get_browser_context() -> BrowserContext:
+def _get_browser_context() -> Optional[BrowserContext]:
     """Get or create a reusable Playwright browser context."""
     global _browser_context
     if _browser_context is None:
         browser = _get_browser()
+        if browser is None:
+            return None
         _browser_context = browser.new_context(
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             viewport={"width": 1920, "height": 1080},
@@ -78,6 +81,7 @@ def _get_browser_context() -> BrowserContext:
 
 
 _playwright_browsers_installed = False
+_playwright_available = True  # Set to False if Playwright fails to initialize
 
 def _ensure_playwright_browsers():
     """Install Playwright browsers if not already installed."""
@@ -86,29 +90,36 @@ def _ensure_playwright_browsers():
         import subprocess
         try:
             _log("Installing Playwright browsers (first run)...")
-            subprocess.run(["playwright", "install", "chromium"], check=True, capture_output=True)
+            subprocess.run(["playwright", "install", "chromium"], check=True, capture_output=True, timeout=120)
             _playwright_browsers_installed = True
             _log("Playwright browsers installed successfully")
         except Exception as e:
             _log(f"Warning: Could not install Playwright browsers: {e}")
             _playwright_browsers_installed = True  # Don't retry
 
-def _get_browser() -> Browser:
+def _get_browser() -> Optional[Browser]:
     """Get or create a Playwright browser instance (lazy initialization)."""
-    global _playwright_instance, _browser_instance
+    global _playwright_instance, _browser_instance, _playwright_available
+    if not _playwright_available:
+        return None
     if _browser_instance is None:
         _ensure_playwright_browsers()
         _log("Starting Playwright browser...")
-        _playwright_instance = sync_playwright().start()
-        _browser_instance = _playwright_instance.chromium.launch(
-            headless=True,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-            ]
-        )
-        _log("Browser started successfully")
+        try:
+            _playwright_instance = sync_playwright().start()
+            _browser_instance = _playwright_instance.chromium.launch(
+                headless=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                ]
+            )
+            _log("Browser started successfully")
+        except Exception as e:
+            _log(f"Playwright failed to start: {e} - using requests only")
+            _playwright_available = False
+            return None
     return _browser_instance
 
 
@@ -131,6 +142,32 @@ def _close_browser() -> None:
         _playwright_instance = None
 
 
+def _fetch_with_requests(url: str) -> Optional[bytes]:
+    """Try to fetch URL with simple requests (faster, no JS).
+    
+    Returns:
+        Response content bytes, or None if failed.
+    """
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+        }
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        content = response.content
+        # Check if we got substantial content (not a Cloudflare challenge)
+        if len(content) > 10000 and b"Just a moment" not in content:
+            _log(f"[REQUESTS] Fetched {url} ({len(content)} bytes)")
+            return content
+        _log(f"[REQUESTS] Got small/blocked response, will try Playwright")
+        return None
+    except Exception as e:
+        _log(f"[REQUESTS] Failed: {e}")
+        return None
+
+
 def _fetch_with_retry(url: str, max_retries: int = 3) -> Optional[bytes]:
     """Fetch URL using Playwright (handles Cloudflare JS challenges).
     
@@ -141,13 +178,29 @@ def _fetch_with_retry(url: str, max_retries: int = 3) -> Optional[bytes]:
     Returns:
         Response content bytes, or None if all retries failed.
     """
-    global _browser_context
+    global _browser_context, _playwright_available
+    
+    # Try simple requests first (faster, works on Streamlit Cloud)
+    result = _fetch_with_requests(url)
+    if result:
+        return result
+    
+    # Skip Playwright if not available
+    if not _playwright_available:
+        _log(f"Playwright not available, cannot fetch {url}")
+        return None
+    
+    # Fall back to Playwright for JS-rendered pages
+    _log(f"Trying Playwright for {url}...")
     
     for attempt in range(max_retries):
         page = None
         try:
             _log(f"Fetch attempt {attempt + 1}/{max_retries}: {url}")
             context = _get_browser_context()
+            if context is None:
+                _log("Browser context unavailable, skipping Playwright")
+                return None
             page = context.new_page()
             
             # Use 'domcontentloaded' for faster initial load, then wait for content
