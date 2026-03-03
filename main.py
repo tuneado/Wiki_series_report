@@ -142,68 +142,85 @@ def _close_browser() -> None:
         _playwright_instance = None
 
 
-def _fetch_with_requests(url: str) -> Optional[bytes]:
+def _fetch_with_requests(url: str, log_callback=None) -> Optional[bytes]:
     """Try to fetch URL with simple requests (faster, no JS).
     
     Returns:
         Response content bytes, or None if failed.
     """
+    def ui_log(msg):
+        _log(msg)
+        if log_callback:
+            log_callback(msg)
+    
     try:
+        ui_log(f"[REQUESTS] Starting fetch: {url.split('/')[-1]}")
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
         }
-        response = requests.get(url, headers=headers, timeout=30)
+        response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
         content = response.content
+        ui_log(f"[REQUESTS] Got response: {len(content)} bytes")
         # Check if we got substantial content (not a Cloudflare challenge)
         if len(content) > 10000 and b"Just a moment" not in content:
-            _log(f"[REQUESTS] Fetched {url} ({len(content)} bytes)")
+            ui_log(f"[REQUESTS] Success!")
             return content
-        _log(f"[REQUESTS] Got small/blocked response, will try Playwright")
+        ui_log(f"[REQUESTS] Blocked by Cloudflare, trying Playwright...")
+        return None
+    except requests.exceptions.Timeout:
+        ui_log(f"[REQUESTS] Timeout after 15s")
         return None
     except Exception as e:
-        _log(f"[REQUESTS] Failed: {e}")
+        ui_log(f"[REQUESTS] Failed: {type(e).__name__}: {e}")
         return None
 
 
-def _fetch_with_retry(url: str, max_retries: int = 3) -> Optional[bytes]:
+def _fetch_with_retry(url: str, max_retries: int = 3, log_callback=None) -> Optional[bytes]:
     """Fetch URL using Playwright (handles Cloudflare JS challenges).
     
     Args:
         url: URL to fetch.
         max_retries: Maximum number of retry attempts.
+        log_callback: Optional callback for real-time logging.
     
     Returns:
         Response content bytes, or None if all retries failed.
     """
     global _browser_context, _playwright_available
     
+    def ui_log(msg):
+        _log(msg)
+        if log_callback:
+            log_callback(msg)
+    
     # Try simple requests first (faster, works on Streamlit Cloud)
-    result = _fetch_with_requests(url)
+    result = _fetch_with_requests(url, log_callback)
     if result:
         return result
     
     # Skip Playwright if not available
     if not _playwright_available:
-        _log(f"Playwright not available, cannot fetch {url}")
+        ui_log(f"Playwright not available, cannot fetch {url}")
         return None
     
     # Fall back to Playwright for JS-rendered pages
-    _log(f"Trying Playwright for {url}...")
+    ui_log(f"Trying Playwright for {url}...")
     
     for attempt in range(max_retries):
         page = None
         try:
-            _log(f"Fetch attempt {attempt + 1}/{max_retries}: {url}")
+            ui_log(f"[Playwright] Attempt {attempt + 1}/{max_retries}")
             context = _get_browser_context()
             if context is None:
-                _log("Browser context unavailable, skipping Playwright")
+                ui_log("[Playwright] Browser unavailable, giving up")
                 return None
             page = context.new_page()
             
             # Use 'domcontentloaded' for faster initial load, then wait for content
+            ui_log("[Playwright] Loading page...")
             response = page.goto(url, wait_until="domcontentloaded", timeout=20000)
             
             # Wait for the page body to have substantial content (Cloudflare challenge passed)
@@ -218,20 +235,21 @@ def _fetch_with_retry(url: str, max_retries: int = 3) -> Optional[bytes]:
             
             content = page.content()
             content_bytes = content.encode("utf-8")
-            _log(f"Page loaded, content length={len(content_bytes)}")
+            ui_log(f"[Playwright] Got {len(content_bytes)} bytes")
             
             # Check if we got a real page (not a challenge page)
             if len(content_bytes) > 10000:
                 page.close()
+                ui_log("[Playwright] Success!")
                 return content_bytes
             
             # Small response might be a challenge page, retry with fresh context
-            _log(f"Small response ({len(content_bytes)} bytes), retrying...")
+            ui_log(f"[Playwright] Small response, retrying...")
             page.close()
             
             # Reset context on failure (might be stale)
             if attempt > 0:
-                _log("Resetting browser context...")
+                ui_log("[Playwright] Resetting browser...")
                 try:
                     _browser_context.close()
                 except:
@@ -242,7 +260,7 @@ def _fetch_with_retry(url: str, max_retries: int = 3) -> Optional[bytes]:
             continue
             
         except Exception as e:
-            _log(f"Fetch error: {e}, retrying...")
+            ui_log(f"[Playwright] Error: {type(e).__name__}")
             if page:
                 try:
                     page.close()
@@ -251,7 +269,7 @@ def _fetch_with_retry(url: str, max_retries: int = 3) -> Optional[bytes]:
             
             # Reset context on timeout errors
             if "timeout" in str(e).lower():
-                _log("Timeout - resetting browser context...")
+                ui_log("[Playwright] Timeout, resetting...")
                 try:
                     if _browser_context:
                         _browser_context.close()
@@ -261,7 +279,7 @@ def _fetch_with_retry(url: str, max_retries: int = 3) -> Optional[bytes]:
             
             time.sleep(2 * (attempt + 1))
     
-    _log(f"All {max_retries} fetch attempts failed for {url}")
+    ui_log(f"[Playwright] All attempts failed")
     return None
 
 
@@ -1536,7 +1554,7 @@ def run_scraper(
     error_logs.clear()
 
     ui_log(f"Fetching: {wiki_link}")
-    content = _fetch_with_retry(wiki_link, max_retries=3)
+    content = _fetch_with_retry(wiki_link, max_retries=3, log_callback=log_callback)
     if not content:
         _close_browser()  # Cleanup on error
         if status:
