@@ -77,10 +77,27 @@ def _get_browser_context() -> BrowserContext:
     return _browser_context
 
 
+_playwright_browsers_installed = False
+
+def _ensure_playwright_browsers():
+    """Install Playwright browsers if not already installed."""
+    global _playwright_browsers_installed
+    if not _playwright_browsers_installed:
+        import subprocess
+        try:
+            _log("Installing Playwright browsers (first run)...")
+            subprocess.run(["playwright", "install", "chromium"], check=True, capture_output=True)
+            _playwright_browsers_installed = True
+            _log("Playwright browsers installed successfully")
+        except Exception as e:
+            _log(f"Warning: Could not install Playwright browsers: {e}")
+            _playwright_browsers_installed = True  # Don't retry
+
 def _get_browser() -> Browser:
     """Get or create a Playwright browser instance (lazy initialization)."""
     global _playwright_instance, _browser_instance
     if _browser_instance is None:
+        _ensure_playwright_browsers()
         _log("Starting Playwright browser...")
         _playwright_instance = sync_playwright().start()
         _browser_instance = _playwright_instance.chromium.launch(
