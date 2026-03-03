@@ -135,10 +135,16 @@ def _close_browser() -> None:
         _browser_context = None
     if _browser_instance:
         _log("Closing Playwright browser...")
-        _browser_instance.close()
+        try:
+            _browser_instance.close()
+        except:
+            pass
         _browser_instance = None
     if _playwright_instance:
-        _playwright_instance.stop()
+        try:
+            _playwright_instance.stop()
+        except:
+            pass
         _playwright_instance = None
 
 
