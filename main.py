@@ -35,7 +35,10 @@ requests_cache.install_cache(
 load_dotenv("vars.env")
 API_KEY = os.getenv("TMDB_API_KEY")
 if not API_KEY:
-    API_KEY = st.secrets.get("TMDB_API_KEY")
+    try:
+        API_KEY = st.secrets["TMDB_API_KEY"]
+    except (KeyError, FileNotFoundError):
+        API_KEY = None
     if not API_KEY:
         st.error("❌ No TMDB API KEY defined in vars.env or Streamlit secrets.")
         st.stop()
