@@ -16,7 +16,12 @@ load_dotenv("vars.env")
 st.set_page_config(page_title="Cache Management", page_icon="🗄️", layout="wide")
 
 # --- Password Protection ---
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")  # Default for testing
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
+if not ADMIN_PASSWORD:
+    try:
+        ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
+    except (KeyError, FileNotFoundError):
+        ADMIN_PASSWORD = "admin123"  # Default for testing
 
 # Initialize session state for authentication
 if "admin_authenticated" not in st.session_state:

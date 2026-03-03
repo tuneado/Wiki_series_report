@@ -21,9 +21,15 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 # Fallback to Streamlit secrets if env vars not set
 if not SUPABASE_URL:
-    SUPABASE_URL = st.secrets.get("SUPABASE_URL")
+    try:
+        SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    except (KeyError, FileNotFoundError):
+        pass
 if not SUPABASE_KEY:
-    SUPABASE_KEY = st.secrets.get("SUPABASE_KEY")
+    try:
+        SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+    except (KeyError, FileNotFoundError):
+        pass
 
 _supabase_client = None
 
