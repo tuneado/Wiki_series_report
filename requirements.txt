@@ -8,7 +8,6 @@ charset-normalizer==3.4.2
 cinemagoer==2023.5.1
 click==8.2.1
 et_xmlfile==2.0.0
-playwright>=1.40.0
 gitdb==4.0.12
 GitPython==3.1.44
 idna==3.10

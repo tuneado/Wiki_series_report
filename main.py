@@ -19,7 +19,7 @@ from imdb import Cinemagoer
 import tmdbsimple as tmdb
 import streamlit as st
 from dotenv import load_dotenv
-from playwright.sync_api import sync_playwright, Browser, Page, BrowserContext
+from urllib.parse import unquote, quote
 
 # Import cache module for Supabase persistence
 import cache as db_cache
@@ -58,249 +58,155 @@ TEST_MODE_LIMIT: int = 16
 
 error_logs: dict[str, str] = {}  # Maps show title to error messages
 
-# Global Playwright browser instance and context (reused across requests)
-_playwright_instance = None
-_browser_instance: Optional[Browser] = None
-_browser_context: Optional[BrowserContext] = None
+# Reusable session for API requests
+_session: Optional[requests.Session] = None
 
 
-def _get_browser_context() -> Optional[BrowserContext]:
-    """Get or create a reusable Playwright browser context."""
-    global _browser_context
-    if _browser_context is None:
-        browser = _get_browser()
-        if browser is None:
-            return None
-        _browser_context = browser.new_context(
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080},
-            locale="pt-PT",
-        )
-        _log("Browser context created (will be reused)")
-    return _browser_context
+def _get_session() -> requests.Session:
+    """Get or create a reusable requests session."""
+    global _session
+    if _session is None:
+        _session = requests.Session()
+        _session.headers.update({
+            "User-Agent": "WikiSeriesReport/1.0 (Streamlit; +https://github.com)",
+            "Accept": "application/json",
+        })
+    return _session
 
 
-_playwright_browsers_installed = False
-_playwright_available = True  # Set to False if Playwright fails to initialize
-
-def _ensure_playwright_browsers():
-    """Install Playwright browsers if not already installed."""
-    global _playwright_browsers_installed
-    if not _playwright_browsers_installed:
-        import subprocess
-        try:
-            _log("Installing Playwright browsers (first run)...")
-            subprocess.run(["playwright", "install", "chromium"], check=True, capture_output=True, timeout=120)
-            _playwright_browsers_installed = True
-            _log("Playwright browsers installed successfully")
-        except Exception as e:
-            _log(f"Warning: Could not install Playwright browsers: {e}")
-            _playwright_browsers_installed = True  # Don't retry
-
-def _get_browser() -> Optional[Browser]:
-    """Get or create a Playwright browser instance (lazy initialization)."""
-    global _playwright_instance, _browser_instance, _playwright_available
-    if not _playwright_available:
-        return None
-    if _browser_instance is None:
-        _ensure_playwright_browsers()
-        _log("Starting Playwright browser...")
-        try:
-            _playwright_instance = sync_playwright().start()
-            _browser_instance = _playwright_instance.chromium.launch(
-                headless=True,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                ]
-            )
-            _log("Browser started successfully")
-        except Exception as e:
-            _log(f"Playwright failed to start: {e} - using requests only")
-            _playwright_available = False
-            return None
-    return _browser_instance
+def _extract_page_name(url: str) -> Optional[str]:
+    """Extract page name from a Fandom wiki URL.
+    
+    Examples:
+        https://wikidobragens.fandom.com/pt/wiki/André_Raimundo -> André_Raimundo
+        /pt/wiki/Some_Page -> Some_Page
+    """
+    # Match /wiki/PageName or /pt/wiki/PageName
+    match = re.search(r'/wiki/([^?#]+)', url)
+    if match:
+        page_name = match.group(1)
+        # URL decode in case it's encoded
+        return unquote(page_name)
+    return None
 
 
-def _close_browser() -> None:
-    """Close the Playwright browser instance and context."""
-    global _playwright_instance, _browser_instance, _browser_context
-    if _browser_context:
-        _log("Closing browser context...")
-        try:
-            _browser_context.close()
-        except:
-            pass
-        _browser_context = None
-    if _browser_instance:
-        _log("Closing Playwright browser...")
-        try:
-            _browser_instance.close()
-        except:
-            pass
-        _browser_instance = None
-    if _playwright_instance:
-        try:
-            _playwright_instance.stop()
-        except:
-            pass
-        _playwright_instance = None
-
-
-def _fetch_with_requests(url: str, log_callback=None) -> Optional[bytes]:
-    """Try to fetch URL with simple requests (faster, no JS).
+def _fetch_via_api(page_name: str, log_callback=None) -> Optional[bytes]:
+    """Fetch page content via MediaWiki API (bypasses Cloudflare).
+    
+    Uses the action=parse API to get rendered HTML content.
+    
+    Args:
+        page_name: Wiki page name (e.g. "André_Raimundo")
+        log_callback: Optional callback for real-time logging.
     
     Returns:
-        Response content bytes, or None if failed.
+        HTML content as bytes, or None if failed.
     """
     def ui_log(msg):
         _log(msg)
         if log_callback:
             log_callback(msg)
     
+    # URL encode the page name for the API
+    encoded_page = quote(page_name, safe='')
+    api_url = f"{BASE_URL}/pt/api.php"
+    
+    params = {
+        "action": "parse",
+        "page": page_name,
+        "format": "json",
+        "prop": "text|categories",
+        "disabletoc": "true",
+    }
+    
+    ui_log(f"[API] Fetching: {page_name}")
+    
     try:
-        ui_log(f"[REQUESTS] Starting fetch: {url.split('/')[-1]}")
-        # Full browser-like headers to avoid 403 bot detection
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-            "Accept-Language": "pt-PT,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-            "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"Windows"',
-            "Cache-Control": "max-age=0",
-        }
-        # Use a session to handle cookies properly
-        session = requests.Session()
-        response = session.get(url, headers=headers, timeout=20)
+        session = _get_session()
+        response = session.get(api_url, params=params, timeout=30)
         response.raise_for_status()
-        content = response.content
-        ui_log(f"[REQUESTS] Got response: {len(content)} bytes")
-        # Check if we got substantial content (not a Cloudflare challenge)
-        if len(content) > 10000 and b"Just a moment" not in content:
-            ui_log(f"[REQUESTS] Success!")
-            return content
-        ui_log(f"[REQUESTS] Blocked by Cloudflare, trying Playwright...")
-        return None
+        
+        data = response.json()
+        
+        # Check for API error
+        if "error" in data:
+            error_code = data["error"].get("code", "unknown")
+            error_info = data["error"].get("info", "Unknown error")
+            ui_log(f"[API] Error: {error_code} - {error_info}")
+            return None
+        
+        # Extract HTML content from API response
+        if "parse" not in data or "text" not in data["parse"]:
+            ui_log(f"[API] Unexpected response format")
+            return None
+        
+        html_content = data["parse"]["text"]["*"]
+        
+        # Wrap in minimal HTML structure for BeautifulSoup compatibility
+        full_html = f"""<!DOCTYPE html>
+<html>
+<head><title>{page_name}</title></head>
+<body>
+<div class="mw-parser-output">
+{html_content}
+</div>
+</body>
+</html>"""
+        
+        content_bytes = full_html.encode("utf-8")
+        ui_log(f"[API] Success: {len(content_bytes)} bytes")
+        return content_bytes
+        
     except requests.exceptions.Timeout:
-        ui_log(f"[REQUESTS] Timeout after 20s")
+        ui_log(f"[API] Timeout after 30s")
+        return None
+    except requests.exceptions.RequestException as e:
+        ui_log(f"[API] Request error: {e}")
         return None
     except Exception as e:
-        ui_log(f"[REQUESTS] Failed: {type(e).__name__}: {e}")
+        ui_log(f"[API] Error: {type(e).__name__}: {e}")
         return None
 
 
 def _fetch_with_retry(url: str, max_retries: int = 3, log_callback=None) -> Optional[bytes]:
-    """Fetch URL using Playwright (handles Cloudflare JS challenges).
+    """Fetch wiki page content using MediaWiki API.
     
     Args:
-        url: URL to fetch.
+        url: Full URL to the wiki page.
         max_retries: Maximum number of retry attempts.
         log_callback: Optional callback for real-time logging.
     
     Returns:
-        Response content bytes, or None if all retries failed.
+        HTML content as bytes, or None if all retries failed.
     """
-    global _browser_context, _playwright_available
-    
     def ui_log(msg):
         _log(msg)
         if log_callback:
             log_callback(msg)
     
-    # Try simple requests first (faster, works on Streamlit Cloud)
-    result = _fetch_with_requests(url, log_callback)
-    if result:
-        return result
-    
-    # Skip Playwright if not available
-    if not _playwright_available:
-        ui_log(f"Playwright not available, cannot fetch {url}")
+    # Extract page name from URL
+    page_name = _extract_page_name(url)
+    if not page_name:
+        ui_log(f"Could not extract page name from URL: {url}")
         return None
     
-    # Fall back to Playwright for JS-rendered pages
-    ui_log(f"Trying Playwright for {url}...")
-    
+    # Try API fetch with retries
     for attempt in range(max_retries):
-        page = None
-        try:
-            ui_log(f"[Playwright] Attempt {attempt + 1}/{max_retries}")
-            context = _get_browser_context()
-            if context is None:
-                ui_log("[Playwright] Browser unavailable, giving up")
-                return None
-            page = context.new_page()
-            
-            # Use 'domcontentloaded' for faster initial load, then wait for content
-            ui_log("[Playwright] Loading page...")
-            response = page.goto(url, wait_until="domcontentloaded", timeout=20000)
-            
-            # Wait for the page body to have substantial content (Cloudflare challenge passed)
-            try:
-                page.wait_for_function(
-                    "document.body && document.body.innerText.length > 1000",
-                    timeout=15000
-                )
-            except:
-                # If wait fails, check if we have enough content anyway
-                pass
-            
-            content = page.content()
-            content_bytes = content.encode("utf-8")
-            ui_log(f"[Playwright] Got {len(content_bytes)} bytes")
-            
-            # Check if we got a real page (not a challenge page)
-            if len(content_bytes) > 10000:
-                page.close()
-                ui_log("[Playwright] Success!")
-                return content_bytes
-            
-            # Small response might be a challenge page, retry with fresh context
-            ui_log(f"[Playwright] Small response, retrying...")
-            page.close()
-            
-            # Reset context on failure (might be stale)
-            if attempt > 0:
-                ui_log("[Playwright] Resetting browser...")
-                try:
-                    _browser_context.close()
-                except:
-                    pass
-                _browser_context = None
-            
-            time.sleep(2 * (attempt + 1))
-            continue
-            
-        except Exception as e:
-            ui_log(f"[Playwright] Error: {type(e).__name__}")
-            if page:
-                try:
-                    page.close()
-                except:
-                    pass
-            
-            # Reset context on timeout errors
-            if "timeout" in str(e).lower():
-                ui_log("[Playwright] Timeout, resetting...")
-                try:
-                    if _browser_context:
-                        _browser_context.close()
-                except:
-                    pass
-                _browser_context = None
-            
-            time.sleep(2 * (attempt + 1))
+        if attempt > 0:
+            ui_log(f"[API] Retry {attempt + 1}/{max_retries}")
+            time.sleep(1 * attempt)  # Brief delay between retries
+        
+        result = _fetch_via_api(page_name, log_callback)
+        if result:
+            return result
     
-    ui_log(f"[Playwright] All attempts failed")
+    ui_log(f"[API] All {max_retries} attempts failed for {page_name}")
     return None
+
+
+def _close_browser() -> None:
+    """No-op for API-based fetching (kept for compatibility)."""
+    pass
 
 
 def _log(msg: str) -> None:
@@ -349,7 +255,7 @@ def extract_labels_from_page(url: str, labels: tuple[str, ...]) -> dict[str, Opt
     """Fetch metadata labels from a Fandom show/film infobox page.
 
     Supports both Portable Infobox (pi-data) and legacy table-based infoboxes.
-    Uses Supabase cache to avoid repeated Playwright fetches.
+    Uses Supabase cache to avoid repeated API fetches.
 
     Args:
         url: Full URL to the Fandom page.
