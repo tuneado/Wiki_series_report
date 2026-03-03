@@ -155,12 +155,26 @@ def _fetch_with_requests(url: str, log_callback=None) -> Optional[bytes]:
     
     try:
         ui_log(f"[REQUESTS] Starting fetch: {url.split('/')[-1]}")
+        # Full browser-like headers to avoid 403 bot detection
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "pt-PT,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "Cache-Control": "max-age=0",
         }
-        response = requests.get(url, headers=headers, timeout=15)
+        # Use a session to handle cookies properly
+        session = requests.Session()
+        response = session.get(url, headers=headers, timeout=20)
         response.raise_for_status()
         content = response.content
         ui_log(f"[REQUESTS] Got response: {len(content)} bytes")
@@ -171,7 +185,7 @@ def _fetch_with_requests(url: str, log_callback=None) -> Optional[bytes]:
         ui_log(f"[REQUESTS] Blocked by Cloudflare, trying Playwright...")
         return None
     except requests.exceptions.Timeout:
-        ui_log(f"[REQUESTS] Timeout after 15s")
+        ui_log(f"[REQUESTS] Timeout after 20s")
         return None
     except Exception as e:
         ui_log(f"[REQUESTS] Failed: {type(e).__name__}: {e}")
