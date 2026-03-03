@@ -14,6 +14,8 @@ if "df" not in st.session_state:
     st.session_state.df = None
 if "error_logs" not in st.session_state:
     st.session_state.error_logs = {}
+if "process_logs" not in st.session_state:
+    st.session_state.process_logs = []
 
 wiki_link = st.text_input("O seu link da Wiki:")
 
@@ -49,6 +51,7 @@ with col_opt3:
 
 status = st.empty()
 progress_bar = st.progress(0)
+log_container = st.empty()  # Container for real-time logs
 
 FANDOM_URL_PATTERN = re.compile(r"^https?://wikidobragens\.fandom\.com(/[a-z]{2})?/wiki/.+")
 
@@ -58,6 +61,16 @@ if st.button("Processar"):
     elif not FANDOM_URL_PATTERN.match(wiki_link):
         st.error("❌ O link deve ser do formato: https://wikidobragens.fandom.com/wiki/...")
     else:
+        # Clear previous logs
+        st.session_state.process_logs = []
+        
+        # Create log callback function
+        def log_callback(msg):
+            st.session_state.process_logs.append(msg)
+            # Display last 15 log lines
+            log_text = "\n".join(st.session_state.process_logs[-15:])
+            log_container.code(log_text, language="")
+        
         with st.spinner("Processando..."):
             df = main.run_scraper(
                 wiki_link,
@@ -67,6 +80,7 @@ if st.button("Processar"):
                 include_series=include_series,
                 include_films=include_films,
                 progress_bar=progress_bar,
+                log_callback=log_callback,
             )
         progress_bar.progress(1.0)
         status.success("✅ Dados processados com sucesso.")

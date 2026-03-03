@@ -1398,6 +1398,7 @@ def _expand_rows(
     progress_offset: float = 0.0,
     progress_scale: float = 1.0,
     start_item: int = 1,
+    log_callback=None,
 ) -> list[dict]:
     """Expand DataFrame rows by calling expand_fn for each unique show/film.
 
@@ -1412,10 +1413,16 @@ def _expand_rows(
         progress_offset: Starting offset for progress bar (0.0 to 1.0).
         progress_scale: Scale factor for this batch within the overall progress.
         start_item: 1-based index of the first unique item to process (skip earlier ones).
+        log_callback: Optional callback function for real-time logging.
 
     Returns:
         List of expanded row dicts.
     """
+    def ui_log(msg):
+        _log(msg)
+        if log_callback:
+            log_callback(msg)
+    
     expanded: list[dict] = []
     seen_titles: set[str] = set()
     total = df["Nome"].nunique()
@@ -1436,10 +1443,10 @@ def _expand_rows(
             continue
 
         processed += 1
-        msg = f"📺 [{unique_index}/{total}] Expanding {item_label}: {title}"
-        print(msg)
+        msg = f"[{unique_index}/{total}] {item_label}: {title}"
+        ui_log(msg)
         if status:
-            status.write(msg)
+            status.write(f"📺 {msg}")
         if progress_bar is not None:
             pct = progress_offset + (processed / total if total > 0 else 1.0) * progress_scale
             progress_bar.progress(min(pct, 1.0))
@@ -1447,15 +1454,18 @@ def _expand_rows(
         # Extract Título Original from Fandom page (cached, so no duplicate requests)
         fandom_url = row.get("URL")
         if fandom_url:
+            ui_log(f"  Fetching Fandom page: {fandom_url.split('/')[-1]}")
             extra = extract_labels_from_page(fandom_url, FANDOM_LABELS)
             titulo_original = extra.get("Título Original") or title
         else:
             titulo_original = title
 
+        ui_log(f"  Searching IMDb/TMDb for: {titulo_original}")
         result_rows = expand_fn(title, row, status)
         err = error_logs.get(title, "")
 
         if result_rows:
+            ui_log(f"  Found {len(result_rows)} season(s)")
             for s in result_rows:
                 s["Error Log"] = err
                 if not s.get("Título Original"):
@@ -1466,6 +1476,7 @@ def _expand_rows(
                         s[k] = str(v)
                 expanded.append(s)
         else:
+            ui_log(f"  No results, using fallback")
             fallback = row.to_dict()
             # Preserve extracted Fandom labels in fallback
             fallback.update({
@@ -1499,6 +1510,7 @@ def run_scraper(
     include_series: bool = True,
     include_films: bool = False,
     progress_bar=None,
+    log_callback=None,
 ) -> pd.DataFrame:
     """Scrape an artist's wiki page and enrich with IMDb/TMDb data.
 
@@ -1510,14 +1522,20 @@ def run_scraper(
         include_series: Whether to scrape the "Séries" section.
         include_films: Whether to scrape the "Filmes" section.
         progress_bar: Streamlit progress bar widget.
+        log_callback: Optional callback function for real-time logging.
 
     Returns:
         DataFrame with one row per show-season (and optionally one row per film).
     """
+    def ui_log(msg):
+        _log(msg)
+        if log_callback:
+            log_callback(msg)
+    
     # Clear stale errors from previous runs
     error_logs.clear()
 
-    _log(f"Fetching: {wiki_link}")
+    ui_log(f"Fetching: {wiki_link}")
     content = _fetch_with_retry(wiki_link, max_retries=3)
     if not content:
         _close_browser()  # Cleanup on error
@@ -1525,6 +1543,7 @@ def run_scraper(
             status.error("❌ Falha ao aceder à página da wiki (Cloudflare blocking). Tente novamente mais tarde.")
         return pd.DataFrame()
     
+    ui_log(f"Page fetched, size: {len(content)} bytes")
     soup = BeautifulSoup(content, "html.parser")
     if status:
         status.write("🔍 A procurar tabela na Fandom...")
@@ -1535,9 +1554,10 @@ def run_scraper(
     if include_series:
         if status:
             status.write("🔍 A procurar tabela de Séries na Fandom...")
+        ui_log("Parsing Séries table...")
         series_df, _ = _parse_wiki_table(soup, "Séries", max_items)
         has_series = not series_df.empty
-        _log(f"Séries result: {'FOUND' if has_series else 'EMPTY'} ({len(series_df)} rows)")
+        ui_log(f"Séries result: {'FOUND' if has_series else 'EMPTY'} ({len(series_df)} rows)")
         if has_series:
             series_df["Error Log"] = ""
             series_df["Tipo"] = "Série"
@@ -1548,14 +1568,16 @@ def run_scraper(
     if include_films:
         if status:
             status.write("🔍 A procurar tabela de Filmes na Fandom...")
+        ui_log("Parsing Filmes table...")
         films_df, _ = _parse_wiki_table(soup, "Filmes", max_items)
         has_films = not films_df.empty
-        _log(f"Filmes result: {'FOUND' if has_films else 'EMPTY'} ({len(films_df)} rows)")
+        ui_log(f"Filmes result: {'FOUND' if has_films else 'EMPTY'} ({len(films_df)} rows)")
         if has_films:
             films_df["Error Log"] = ""
             films_df["Tipo"] = "Filme"
 
     if not has_series and not has_films:
+        ui_log("ERROR: No tables found on page")
         if status:
             status.error("❌ Nenhuma tabela encontrada.")
         return pd.DataFrame()
@@ -1576,11 +1598,12 @@ def run_scraper(
     if has_series:
         if status:
             status.write("📺 A processar séries...")
+        ui_log(f"Processing {len(series_df)} series...")
         expanded.extend(
             _expand_rows(
                 series_df, get_seasons_as_rows, status, progress_bar,
                 item_label="série", progress_offset=0.0, progress_scale=series_weight,
-                start_item=start_item,
+                start_item=start_item, log_callback=log_callback,
             )
         )
 
@@ -1588,15 +1611,17 @@ def run_scraper(
     if has_films:
         if status:
             status.write("🎬 A processar filmes...")
+        ui_log(f"Processing {len(films_df)} films...")
         expanded.extend(
             _expand_rows(
                 films_df, get_film_row, status, progress_bar,
                 item_label="filme", progress_offset=series_weight, progress_scale=films_weight,
-                start_item=start_item,
+                start_item=start_item, log_callback=log_callback,
             )
         )
 
     # Cleanup Playwright browser
     _close_browser()
+    ui_log(f"Done! Total rows: {len(expanded)}")
     
     return pd.DataFrame(expanded)
